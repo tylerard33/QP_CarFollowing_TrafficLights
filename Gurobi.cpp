@@ -11,6 +11,10 @@ void GurobiModel::WriteValue(const std::string & s) {
 	std::cout << s << "\n";
 }
 
+// min u'QU + f'U
+// st. A U \leq b
+// U \in 'cb'
+
 // Ga, cfa, Sa, Xia == Q, c, A, b
 // Note that it is expected Matrices are in Colwise Order
 VECTORX GurobiModel::Solve(const MATRIXX & Q, const MATRIXX & c, const MATRIXX & A, const MATRIXX & b,

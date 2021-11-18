@@ -23,3 +23,6 @@ constexpr auto QMOD = 0.5; // 1.0 or 0.5 for coefficient on Q in QP
 #define USECC 1 // 1 to use chance constraint in S
 #define TURNOFFTERMINAL 1 // 1 to turn off terminal constraint on velocity
 #define TURNOFFWHEEL 1 // 1 to turn off constraint on acceleration at the wheel
+
+#define MPCLOGNAME "data/MPCLog.txt"
+#define MPCLOGGING false

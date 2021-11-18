@@ -30,6 +30,11 @@ class MPCVehicle
 {	
 	private:
 
+	enum MODE {
+		FOLLOWINGCAV = 1,
+		FOLLOWINGHUMAN = 2
+	};
+
 	std::ofstream LOGFILE;
 
 	// Vehicle Control Matrix Declarations
@@ -37,6 +42,8 @@ class MPCVehicle
 	bool RobustCase = 0;
 	bool ApplyCatchUpToHuman = 0;
 	double CatchUpVelocity = 0.0;
+	
+	int Mode;
 
 	MATRIXX ACtrlMatrix;
 	VECTORX BCtrlMatrix;
@@ -132,13 +139,13 @@ class MPCVehicle
 	VECTORX eopt;
 	VECTORX trajP_prob;
 	VECTORX trajP_wc;
-	VECTORX conV;
+	VECTORX conS;
 	VECTORX VRef;
 
 	MPCVehicle(
 		double CtrlTS = 1.0, 
 		double TimeConstant = 3.6364,
-		double THeadway = 1.2, int N = 16, double QG = 1, double QA = 2000,
+		double THeadway = 1.2, int N = 16, double QG = 1, double QA = 20,
 		bool UseKinematic = 0
 	);
 

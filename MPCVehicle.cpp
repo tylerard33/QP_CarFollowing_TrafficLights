@@ -31,13 +31,17 @@ void MPCVehicle::BuildQPStructure()
 	CCtrlMatrix = (MATRIXX(3,3) << 0, 0, 0,
 									0, 0, 0, // Dynamic
 									0, 0, 1).finished();
-	#else
-	CCtrlMatrix = (MATRIXX(2,3) << 1, THeadway, 0,
-									0, 0, 1).finished();
-	#endif
-
-	DCtrlMatrix = (VECTORX(2) << 0,
+	DCtrlMatrix = (VECTORX(3) << 0,
+								0,
 								0).finished();
+	#else
+	CCtrlMatrix = (MATRIXX(3,3) << 1, THeadway, 0,
+									0, 1, 0,
+									0, 0, 1).finished();
+	DCtrlMatrix = (VECTORX(3) << 0,
+								0,
+								0).finished();
+	#endif
 
 	NumStates = ACtrlMatrix.cols();
 	NumInputs = BCtrlMatrix.cols();
@@ -69,8 +73,9 @@ void MPCVehicle::BuildQPStructure()
 								0, 1, 0,
 								0, 0, QA).finished();
 	#else
-	QMatrix = (MATRIXX(2,2) << QG, 0,
-								0, QA).finished();
+	QMatrix = (MATRIXX(3,3) << QG, 0, 0,
+								0, 10, 0,
+								0, 0, QA).finished();
 	#endif
 	
 	PMatrix = QMatrix;
@@ -375,7 +380,7 @@ void MPCVehicle::Solve() {
 		Eigen::kroneckerProduct(trajP_prob.block(1, 0, N, 1) - MATRIXX::Constant(N, 1, DRef), (MATRIXX(NumOutputs, 1) << 1, 0, 0).finished()) + 
 		Eigen::kroneckerProduct(VRef, (MATRIXX(NumOutputs, 1) << 0, 1, 0).finished());
 	#else
-	const MATRIXX cR = Eigen::kroneckerProduct(trajP_prob.block(1, 0, N, 1) - MATRIXX::Constant(N, 1, DRef), (MATRIXX(NumOutputs, 1) << 1, 0).finished()); // c(0) = r_prob - DRef;
+	const MATRIXX cR = Eigen::kroneckerProduct(trajP_prob.block(1, 0, N, 1) - MATRIXX::Constant(N, 1, DRef), (MATRIXX(NumOutputs, 1) << 1, 0, 0).finished()); // c(0) = r_prob - DRef;
 	#endif
 
 	MATRIXX cM = (MATRIXX(InitialSize + (N-1)*StageSize, (N-1)*NumStates) <<
@@ -393,26 +398,35 @@ void MPCVehicle::Solve() {
 	#if USECC
 	const VECTORX Alpha = VECTORX::LinSpaced(N, 0.999999, 0.5);
 
-	int i = 0;
-	ccDi(i) = trajP_wc(i) - DMin;
-	for (i = 1; i < N-1; ++i) {
-		ccDi(i) = (trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i), (double)i) < trajP_wc(0)) ? trajP_wc(i) - DMin : trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i), (double)i);
-		ccDi(i) = fmin(ccDi(i), conV(i-1));
+	int i;
+	if (Mode == FOLLOWINGHUMAN) {
+		for (i = 1; i < N; ++i) {
+			ccDi(i-1) = (trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i-1), (double)i) < trajP_wc(0)) ? trajP_wc(i) - DMin : trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i-1), (double)i);
+			ccDi(i-1) = fmin(ccDi(i-1), conS(i-1));
+		}
+		ccDN(0, 0) = (trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i-1), (double)i) < trajP_wc(0)) ? trajP_wc(i) - DMin : trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i-1), (double)i); // r_wc - DMin - Dcc(x)
+		ccDN(0, 0) = fmin(ccDN(0, 0), conS(N-1));
 	}
-	ccDN(0, 0) = (trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i), (double)i) < trajP_wc(0)) ? trajP_wc(i) - DMin : trajP_wc(i) - DMin - Chance.GetChanceConstr(Alpha(i), (double)i); // r_wc - DMin - Dcc(x)
-	ccDN(0, 0) = fmin(ccDN(0, 0), conV(N-1));
+	else {
+		for (i = 1; i < N; ++i) {
+			ccDi(i-1) = trajP_wc(i) - DMin;
+			ccDi(i-1) = fmin(ccDi(i-1), conS(i-1));
+		}
+		ccDN(0, 0) = trajP_wc(i) - DMin; // r_wc - DMin
+		ccDN(0, 0) = fmin(ccDN(0, 0), conS(N-1));
+	}
 	#endif
 
 	static MATRIXX cV = MATRIXX::Zero(StageSize, 1);
 	cV(4, 0) = 1; // b(4) = conV(x)
 
 	MATRIXX cVN = MATRIXX::Zero(EndSize, 1);
-	cVN(2, 0) = 22.2222;
+	cVN(2, 0) = VelocityMax;
 
 	const MATRIXX cC = (MATRIXX(InitialSize + (N-1)*StageSize + EndSize, 1) <<
 		b0,
-		Eigen::kroneckerProduct(MATRIXX::Ones(N-1, 1), b) + Eigen::kroneckerProduct(ccDi, cD), //Eigen::kroneckerProduct(MATRIXX::Ones(N-1, 1), b) + Eigen::kroneckerProduct(ccDi, cD) + Eigen::kroneckerProduct(conV.block(0, 0, N-1, 1), cV),
-		bN + ccDN + cVN
+		Eigen::kroneckerProduct(MATRIXX::Ones(N-1, 1), b) + Eigen::kroneckerProduct(ccDi, cD), //Eigen::kroneckerProduct(MATRIXX::Ones(N-1, 1), b) + Eigen::kroneckerProduct(ccDi, cD) + Eigen::kroneckerProduct(conS.block(0, 0, N-1, 1), cV),
+		bN + ccDN //+ cVN
 	).finished();
 
 	// Build D Matrix
@@ -506,44 +520,44 @@ short MPCVehicle::GetFinite(const VECTORX & vec, short n)
 
 void MPCVehicle::FormVelocityCon(const SensorInfo & S) {
 	// Initialize constraint vector and predict ego's trajectory
-	conV = VECTORX::Constant(N, 2000);
+	conS = VECTORX::Constant(N, 2000);
 
 	#if SPEEDLIMITDISTANCECAL && !USESPEEDREF
 	MATRIXX Forward = MATRIXX::Zero(NumStates, N+1);
 	SimulateDynamics( Forward, Z, VECTORX::Constant(N, Z(2)) );
 
 	// Speed Limits
-	if (S.SpeedLimitDistance > -5.0 && S.SpeedLimitDistance < SPEEDLIMITDISTANCECAL)
-	{
-		const double prefA = -2.0;
-		const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax*VelocityMax) / (2.0*prefA));
+	// if (S.SpeedLimitDistance > -5.0 && S.SpeedLimitDistance < SPEEDLIMITDISTANCECAL)
+	// {
+	// 	const double prefA = -2.0;
+	// 	const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax*VelocityMax) / (2.0*prefA));
 
-		// Build constraint vector
-		if (VelocityMax < S.SpeedLimitValue) // Will be speeding up
-		{
-			const double prefA = AccelerationMax;
-			const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax * VelocityMax) / (2.0*prefA));
-			for (int i = 0; i < N; ++i)
-			{
-				if (Forward(0, i) >= S.SpeedLimitDistance + deltaX) conV(i) = S.SpeedLimitValue;
-				else if (Forward(0, i) < S.SpeedLimitDistance) conV(i) = VelocityMax; 
-				else if (Forward(0, i) < S.SpeedLimitDistance + deltaX) conV(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(Forward(0, i) - S.SpeedLimitDistance), 0.5);
-				else throw std::runtime_error("Should have a condition met?");
-			}
-		}
-		else // Will be slowing down
-		{
-			const double prefA = -2.0;
-			const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax * VelocityMax) / (2.0*prefA));
-			for (int i = 0; i < N; ++i) 
-			{
-				if (Forward(0, i) <= S.SpeedLimitDistance - deltaX) conV(i) = VelocityMax;
-				else if (Forward(0, i) < S.SpeedLimitDistance) conV(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(deltaX - (S.SpeedLimitDistance-Forward(0, i))), 0.5);
-				else if (Forward(0, i) >= S.SpeedLimitDistance || S.DriverDataVehVelocity*CtrlTS >= S.SpeedLimitDistance) conV(i) = S.SpeedLimitValue;
-				else throw std::runtime_error("Should have a condition met?");
-			}
-		}
-	}
+	// 	// Build constraint vector
+	// 	if (VelocityMax < S.SpeedLimitValue) // Will be speeding up
+	// 	{
+	// 		const double prefA = AccelerationMax;
+	// 		const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax * VelocityMax) / (2.0*prefA));
+	// 		for (int i = 0; i < N; ++i)
+	// 		{
+	// 			if (Forward(0, i) >= S.SpeedLimitDistance + deltaX) conV(i) = S.SpeedLimitValue;
+	// 			else if (Forward(0, i) < S.SpeedLimitDistance) conV(i) = VelocityMax; 
+	// 			else if (Forward(0, i) < S.SpeedLimitDistance + deltaX) conV(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(Forward(0, i) - S.SpeedLimitDistance), 0.5);
+	// 			else throw std::runtime_error("Should have a condition met?");
+	// 		}
+	// 	}
+	// 	else // Will be slowing down
+	// 	{
+	// 		const double prefA = -2.0;
+	// 		const double deltaX = abs((S.SpeedLimitValue*S.SpeedLimitValue - VelocityMax * VelocityMax) / (2.0*prefA));
+	// 		for (int i = 0; i < N; ++i) 
+	// 		{
+	// 			if (Forward(0, i) <= S.SpeedLimitDistance - deltaX) conV(i) = VelocityMax;
+	// 			else if (Forward(0, i) < S.SpeedLimitDistance) conV(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(deltaX - (S.SpeedLimitDistance-Forward(0, i))), 0.5);
+	// 			else if (Forward(0, i) >= S.SpeedLimitDistance || S.DriverDataVehVelocity*CtrlTS >= S.SpeedLimitDistance) conV(i) = S.SpeedLimitValue;
+	// 			else throw std::runtime_error("Should have a condition met?");
+	// 		}
+	// 	}
+	// }
 
 	// Traffic Lights - Check first light is not green and within range
 	if (S.Lights.size() > 0) {
@@ -558,12 +572,12 @@ void MPCVehicle::FormVelocityCon(const SensorInfo & S) {
 				const double & d0 = DRef;
 				for (int i = 0; i < N; ++i) 
 				{
-					conV(i) = S.Lights.front().SignalDistance - 5.0;
-					// if (Forward(0, i) <= S.Lights.front().SignalDistance - deltaX) conV(i) = VelocityMax;
-					// else if (S.Lights.front().SignalDistance < d0 || S.DriverDataVehVelocity*CtrlTS + d0 >= S.Lights.front().SignalDistance) conV(i) = 0;
-					// else if (Forward(0, i) < S.Lights.front().SignalDistance) conV(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(deltaX - (S.Lights.front().SignalDistance-Forward(0, i))), 0.5);
-					// else if (Forward(0, i) >= S.Lights.front().SignalDistance) conV(i) = 0;
-					// else conV(i) = 0;
+					conS(i) = S.Lights.front().SignalDistance - 5.0;
+					// if (Forward(0, i) <= S.Lights.front().SignalDistance - deltaX) conS(i) = VelocityMax;
+					// else if (S.Lights.front().SignalDistance < d0 || S.DriverDataVehVelocity*CtrlTS + d0 >= S.Lights.front().SignalDistance) conS(i) = 0;
+					// else if (Forward(0, i) < S.Lights.front().SignalDistance) conS(i) = pow(VelocityMax*VelocityMax + 2.0*prefA*(deltaX - (S.Lights.front().SignalDistance-Forward(0, i))), 0.5);
+					// else if (Forward(0, i) >= S.Lights.front().SignalDistance) conS(i) = 0;
+					// else conS(i) = 0;
 				}
 			}
 		}
@@ -590,7 +604,7 @@ void MPCVehicle::FormVelocityCon(const SensorInfo & S) {
 
 				bC = Eigen::kroneckerProduct(MATRIXX::Identity(N, N), CCtrlMatrix);
 
-				VRef = conV;
+				VRef = conS;
 			}
 			else { // Treat as red light
 				CCtrlMatrix(1,0) = 1;
@@ -607,7 +621,7 @@ void MPCVehicle::FormVelocityCon(const SensorInfo & S) {
 
 			bC = Eigen::kroneckerProduct(MATRIXX::Identity(N, N), CCtrlMatrix);
 
-			VRef = conV;
+			VRef = conS;
 		}
 		#endif
 	}
@@ -686,6 +700,11 @@ MPCVehicle::MPCVehicle(
 	CtrlTS(CtrlTS), TimeConstant(TimeConstant), THeadway(THeadway), 
 	N(N), QG(QG), QA(QA), UseKinematic(UseKinematic) 
 {
+	// Logging
+	#if MPCLOGGING
+	if(!LOGFILE.is_open()) LOGFILE.open(MPCLOGNAME, std::ios::trunc);
+	#endif
+
 	// OPENMP
 	#if NUMTHREADS != 1 && NUMTHREADS != 0
 	static bool setOMP = 1;
@@ -760,6 +779,10 @@ MATRIXX MPCVehicle::DetermineControlMove(double * Control, const int NumControls
 
 		trajP_prob = OtherTrajectory.row(0).array() + OtherDistance;
 		trajP_wc = trajP_prob;
+
+		Mode = FOLLOWINGCAV;
+
+		if (LOGFILE.is_open()) LOGFILE << "FOLLOWING CAV: ";
 	}
 	else // Not Following an MPC Vehicle or Opening Part of Simulation
 	{
@@ -768,6 +791,10 @@ MATRIXX MPCVehicle::DetermineControlMove(double * Control, const int NumControls
 		SimulateDynamics( OtherTrajectory, OtherZ, VECTORX::Constant(N, OtherZ(2)) );
 		trajP_prob = OtherTrajectory.row(0);
 		trajP_wc = trajP_prob; // s_PV_panic_vec
+
+		Mode = FOLLOWINGHUMAN;
+
+		if (LOGFILE.is_open()) LOGFILE << "FOLLOWING HUMAN: ";
 	}
 
 	// Build time-varying velocity constraint
@@ -799,6 +826,11 @@ MATRIXX MPCVehicle::DetermineControlMove(double * Control, const int NumControls
 		// Return Immediate Move
 		Control[0] = Z(1) + U(0)*0.1; // Velocity
 		Control[1] = U(0); // Acceleration
+
+		if (LOGFILE.is_open()) {
+			for (int i = 0; i < 16; ++i) LOGFILE << trajP_prob(i+1) - Trajectory(0,i) << ",\t";
+			LOGFILE << "\n";
+		}
 	}
 
 	return Trajectory;
